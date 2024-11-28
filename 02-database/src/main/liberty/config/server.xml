@@ -1,0 +1,49 @@
+<server>
+  <featureManager>
+    <!-- support for accessing database -->
+    <feature>jdbc-4.3</feature>
+    <feature>persistence-3.1</feature>
+    <!-- host a web service with a REST API -->
+    <feature>restfulWS-3.1</feature>
+    <!-- support for JSON payloads -->
+    <feature>jsonb-3.0</feature>
+    <!-- support healthcheck/readiness/liveness endpoints -->
+    <feature>mpHealth-4.0</feature>
+  </featureManager>
+
+  <library id="postgresqlLib">
+    <fileset
+      dir="${shared.resource.dir}"
+      includes="postgres*.jar"/>
+  </library>
+  <dataSource
+    id="DefaultDataSource"
+    jndiName="jdbc/DefaultDataSource"
+    jdbcDriverRef="postgresql-driver"
+    type="javax.sql.ConnectionPoolDataSource"
+    transactional="true">
+    <properties
+      serverName="${postgres.servername}"
+      portNumber="${postgres.portnumber}"
+      databaseName="${postgres.databasename}"
+      user="${postgres.user}"
+      password="${postgres.password}"/>
+  </dataSource>
+
+  <jdbcDriver id="postgresql-driver"
+    libraryRef="postgresqlLib"
+    javax.sql.XADataSource="org.postgresql.xa.PGXADataSource"
+    javax.sql.ConnectionPoolDataSource="org.postgresql.ds.PGConnectionPoolDataSource"
+    javax.sql.DataSource="org.postgresql.ds.PGPoolingDataSource"/>
+
+  <httpEndpoint
+    id="defaultHttpEndpoint"
+    host="*"
+    httpPort="${http.port}"
+    httpsPort="${https.port}"/>
+
+  <webApplication
+    contextRoot="${app.context.root}"
+    location="kafka-projection-database.war"/>
+
+</server>

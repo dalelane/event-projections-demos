@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 
 #
-# This config map provides credentials that will be used to access
+# This config map provides connection information that will be used to access
 #  the Kafka topics
 #
 # It is based on connecting to the Kafka cluster created by the demo playbook

@@ -1,0 +1,259 @@
+# -----------------------------------------------------------------------------
+# SAMPLE DEPLOYMENT OF THE "database" PROJECTIONS DEMO
+# -----------------------------------------------------------------------------
+
+# PRE-REQ 1):
+#  This is using the database from the Event Automation demo playbook
+#
+#  You need to run the playbook to set up the database, as described at
+#  https://github.com/IBM/event-automation-demo/blob/main/INSTALL-OPTIONS.md#postgresql
+#
+#  This will create a PostgreSQL database for you, in the same OpenShift
+#  namespace as your Event Streams Kafka cluster.
+
+# PRE-REQ 2):
+#  This is using the Kafka Connect cluster from my Kafka demos repository
+#
+#  You can get a Kafka Connect cluster ready to run JDBC sink connectors by
+#  following the steps at
+#  https://github.com/dalelane/kafka-demos?tab=readme-ov-file#jdbc-sink
+
+
+
+
+#
+# This config map provides the Kafka Connect JsonConverter schemas for the
+# topics that we want to sink to the database.
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: projection-database-schemas
+  namespace: event-automation
+data:
+  sensor-readings.json: |-
+    {
+        "type": "struct",
+        "fields": [
+            { "field": "sensortime", "type": "string", "optional": false },
+            { "field": "sensorid", "type": "string", "optional": false },
+            { "field": "temperature", "type": "float", "optional": false },
+            { "field": "humidity", "type": "int32", "optional": false }
+        ]
+    }
+  door-badgeins.json: |-
+    {
+        "type": "struct",
+        "fields": [
+            { "field": "recordid", "type": "string", "optional": false },
+            { "field": "door", "type": "string", "optional": false },
+            { "field": "employee", "type": "string", "optional": false },
+            { "field": "badgetime", "type": "string", "optional": false }
+        ]
+    }
+
+---
+
+#
+# Kafka Connect connectors to maintain a database projection of the
+#  SENSOR.READINGS and DOOR.BADGEIN Kafka topics.
+#
+# Both are configured to perform "upserts" - new events replace any existing
+#  rows with the same database primary key.
+# For the SENSOR.READINGS topic, the Kafka message key (representing the sensor id)
+#  is used as the database primary key.
+# For the DOOR.BADGEIN topic, the door property from the message payload
+#  (representing the door id) is used as the database primary key.
+
+apiVersion: eventstreams.ibm.com/v1beta2
+kind: KafkaConnector
+metadata:
+  labels:
+    eventstreams.ibm.com/cluster: kafka-connect-cluster
+  name: projection-sensorreadings-connector
+  namespace: event-automation
+spec:
+  # connector config
+  class: io.aiven.connect.jdbc.JdbcSinkConnector
+  config:
+    # format
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    key.converter.schemas.enable: false
+    value.converter: uk.co.dalelane.kafkaconnect.converters.JsonSchemaConverter
+    value.converter.schemas.enable: true
+    value.converter.schema.file: /mnt/projection-database-schemas/sensor-readings.json
+    # source
+    topics: SENSOR.READINGS
+    # connection info
+    connection.url: jdbc:postgresql://${file:/mnt/connect-creds-postgresql:host}:${file:/mnt/connect-creds-postgresql:pgbouncer-port}/${file:/mnt/connect-creds-postgresql:dbname}
+    connection.user: ${file:/mnt/connect-creds-postgresql:user}
+    connection.password: ${file:/mnt/connect-creds-postgresql:password}
+    table.name.format: sensorreadings
+    # behaviour
+    insert.mode: upsert
+    auto.create: true
+    # primary key
+    pk.mode: record_key
+    pk.fields: key
+  # scaling
+  tasksMax: 1
+  # error tolerance
+  autoRestart:
+    enabled: true
+---
+apiVersion: eventstreams.ibm.com/v1beta2
+kind: KafkaConnector
+metadata:
+  labels:
+    eventstreams.ibm.com/cluster: kafka-connect-cluster
+  name: projection-doorbadgeins-connector
+  namespace: event-automation
+spec:
+  # connector config
+  class: io.aiven.connect.jdbc.JdbcSinkConnector
+  config:
+    # format
+    key.converter: org.apache.kafka.connect.storage.StringConverter
+    key.converter.schemas.enable: false
+    value.converter: uk.co.dalelane.kafkaconnect.converters.JsonSchemaConverter
+    value.converter.schemas.enable: true
+    value.converter.schema.file: /mnt/projection-database-schemas/door-badgeins.json
+    # source
+    topics: DOOR.BADGEIN
+    # connection info
+    connection.url: jdbc:postgresql://${file:/mnt/connect-creds-postgresql:host}:${file:/mnt/connect-creds-postgresql:pgbouncer-port}/${file:/mnt/connect-creds-postgresql:dbname}
+    connection.user: ${file:/mnt/connect-creds-postgresql:user}
+    connection.password: ${file:/mnt/connect-creds-postgresql:password}
+    table.name.format: doorbadgeins
+    # behaviour
+    insert.mode: upsert
+    auto.create: true
+    # primary key
+    pk.mode: record_value
+    pk.fields: door
+  # scaling
+  tasksMax: 1
+  # error tolerance
+  autoRestart:
+    enabled: true
+
+---
+
+#
+# This secret provides credentials that will be used to access
+#  the PostgreSQL database.
+# The values are copied from the pgsqldemo-pguser-demouser Secret
+#  As the password is dynamically generated, you will need to
+#  copy the password value from that secret into the one below
+#  (The other non-password values should be correct for your DB).
+
+kind: Secret
+apiVersion: v1
+type: Opaque
+metadata:
+  name: projectionsdemo-database
+  namespace: event-automation
+stringData:
+  bootstrap.properties: |-
+    postgres.servername=pgsqldemo-primary.event-automation.svc
+    postgres.portnumber=5432
+    postgres.databasename=pgsqldemo
+    postgres.user=demouser
+    postgres.password=eMXa_C{@kdS/mx,1oSaoN)fW
+
+---
+
+
+#
+# This deployment runs the projection in OpenShift, in the same project/namespace
+#  as the database.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: projectionsdemo-database
+  namespace: event-automation
+  labels:
+    app: projectionsdemo-database
+spec:
+  selector:
+    matchLabels:
+      app: projectionsdemo-database
+  template:
+    metadata:
+      labels:
+        app: projectionsdemo-database
+    spec:
+      volumes:
+        - name: projectionsdemo-database
+          secret:
+            secretName: projectionsdemo-database
+      containers:
+      - name: projections
+        image: image-registry.openshift-image-registry.svc:5000/event-automation/projectionsdemo-database:0.1.0
+        ports:
+        - containerPort: 8000
+        startupProbe:
+          httpGet:
+            path: /health/started
+            port: 8000
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 1
+        readinessProbe:
+           httpGet:
+            path: /health/ready
+            port: 8000
+           initialDelaySeconds: 30
+           periodSeconds: 10
+           timeoutSeconds: 3
+           failureThreshold: 1
+        env:
+          - name: http.port
+            value: '8000'
+          - name: https.port
+            value: '8001'
+          - name: app.context.root
+            value: /
+        volumeMounts:
+          - name: projectionsdemo-database
+            mountPath: /opt/ol/wlp/usr/servers/defaultServer/bootstrap.properties
+            subPath: bootstrap.properties
+            readOnly: true
+---
+
+#
+# The demo app provides a REST API that can be queried to
+#  access the projection. This service and route enables
+#  external (un-authenticated) access to the API.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: projectionsdemo-database
+  namespace: event-automation
+spec:
+  selector:
+    app: projectionsdemo-database
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: projectionsdemo-database
+  namespace: event-automation
+spec:
+  path: /
+  to:
+    name: projectionsdemo-database
+    kind: Service
+  port:
+    targetPort: 8000
