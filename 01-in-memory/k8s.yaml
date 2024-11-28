@@ -1,0 +1,146 @@
+# -----------------------------------------------------------------------------
+# SAMPLE DEPLOYMENT OF THE "in-memory" PROJECTIONS DEMO
+# -----------------------------------------------------------------------------
+
+#
+# This config map provides credentials that will be used to access
+#  the Kafka topics
+#
+# It is based on connecting to the Kafka cluster created by the demo playbook
+#  from https://github.com/IBM/event-automation-demo
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: projectionsdemo-inmemory
+  namespace: event-automation
+data:
+  kafka.application.id: kafka-projections-inmemory
+  kafka.client.id: kafka-projections-inmemory
+  kafka.group.id: kafka-projections-inmemory
+  kafka.bootstrap.servers: my-kafka-cluster-kafka-bootstrap.event-automation.svc:9095
+  kafka.ssl.truststore.location: /tmp/kafka/ca.p12
+  kafka.ssl.truststore.type: PKCS12
+  kafka.sasl.mechanism: SCRAM-SHA-512
+  kafka.security.protocol: SASL_SSL
+
+---
+
+#
+# This deployment runs the projection in OpenShift, in the same project/namespace
+#  as the Event Streams Kafka cluster.
+# Keeping it in the same namespace means the application can bind directly to
+#  Secrets with credentials for accessing the Kafka cluster.
+# The application could be run elsewhere, if the credentials are provided in an
+#  alternate way.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: projectionsdemo-inmemory
+  namespace: event-automation
+  labels:
+    app: projectionsdemo-inmemory
+spec:
+  selector:
+    matchLabels:
+      app: projectionsdemo-inmemory
+  template:
+    metadata:
+      labels:
+        app: projectionsdemo-inmemory
+    spec:
+      volumes:
+        - name: kafka-certs
+          secret:
+            secretName: my-kafka-cluster-cluster-ca-cert
+            items:
+              - key: ca.p12
+                path: ca.p12
+      containers:
+      - name: projections
+        image: image-registry.openshift-image-registry.svc:5000/event-automation/projectionsdemo-inmemory:0.1.0
+        ports:
+        - containerPort: 8000
+        startupProbe:
+          httpGet:
+            path: /health/started
+            port: 8000
+          periodSeconds: 120
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 1
+        readinessProbe:
+           httpGet:
+            path: /health/ready
+            port: 8000
+           initialDelaySeconds: 30
+           periodSeconds: 10
+           timeoutSeconds: 3
+           failureThreshold: 1
+        envFrom:
+        - configMapRef:
+            name: projectionsdemo-inmemory
+        env:
+          - name: http.port
+            value: '8000'
+          - name: https.port
+            value: '8001'
+          - name: app.context.root
+            value: /
+          # the name of the listener truststore is based on
+          #  the name of the Kafka cluster as defined in
+          # https://github.com/IBM/event-automation-demo/blob/main/install/eventstreams/templates/03-es.yaml
+          - name: kafka.ssl.truststore.password
+            valueFrom:
+              secretKeyRef:
+                key: ca.password
+                name: my-kafka-cluster-cluster-ca-cert
+          # using Kafka client credentials defined in
+          #  https://github.com/IBM/event-automation-demo/blob/main/install/eventstreams/templates/09-apps-user.yaml
+          - name: kafka.sasl.jaas.config
+            valueFrom:
+              secretKeyRef:
+                key: sasl.jaas.config
+                name: kafka-demo-apps
+        volumeMounts:
+          - name: kafka-certs
+            mountPath: /tmp/kafka/
+
+---
+
+#
+# The demo app provides a REST API that can be queried to
+#  access the projection. This service and route enables
+#  external (un-authenticated) access to the API.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: projectionsdemo-inmemory
+  namespace: event-automation
+spec:
+  selector:
+    app: projectionsdemo-inmemory
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: projectionsdemo-inmemory
+  namespace: event-automation
+spec:
+  path: /
+  to:
+    name: projectionsdemo-inmemory
+    kind: Service
+  port:
+    targetPort: 8000
